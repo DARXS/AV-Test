@@ -1,4 +1,4 @@
-# Projeto de Teste de Aceleração Veicular (AV Test)
+# Projeto de Equipamento para Teste de Aceleração e Velocidade Veicular (AV Test)
 
 Este repositório contém o código-fonte para um sistema de cronometragem de teste de aceleração de veículos, utilizando microcontroladores ESP32 e o protocolo de comunicação ESP-NOW.
 
