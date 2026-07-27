@@ -1,14 +1,53 @@
-# Projeto de Equipamento para Teste de Aceleração e Velocidade Veicular (AV Test)
+# AV Test
 
-Este repositório contém o código-fonte para um sistema de cronometragem de teste de aceleração de veículos, utilizando microcontroladores ESP32 e o protocolo de comunicação ESP-NOW.
+![Platform](https://img.shields.io/badge/platform-ESP32-blue)
+![Framework](https://img.shields.io/badge/framework-Arduino%20%2F%20PlatformIO-orange)
+![Comm](https://img.shields.io/badge/comunica%C3%A7%C3%A3o-ESP--NOW-9cf)
+![Team](https://img.shields.io/badge/equipe-Mangue%20Baja%20UFPE-brightgreen)
 
-## Visão Geral
+Sistema de cronometragem para teste de aceleração e velocidade veicular, da equipe **Mangue Baja (UFPE)**. Mede com precisão os tempos de passagem do veículo em distâncias predefinidas (30 m e 100 m), calcula a velocidade final e registra tudo em cartão SD — usando uma rede de módulos ESP32 comunicando-se via **ESP-NOW**.
 
-O projeto consiste em um sistema modular projetado para medir com precisão os tempos de passagem de um veículo em distâncias predefinidas (30m e 100m) e calcular sua velocidade. O sistema é composto por uma Unidade de Controle Eletrônico (ECU) principal e módulos de sensores remotos.
+## Visão geral
 
-## Estrutura de Arquivos
+O sistema é composto por uma **ECU** (módulo de 0 m, com LCD e cartão SD) e módulos sensores remotos posicionados a 30 m e 100 m da largada. Um módulo **Bridge** opcional pode ser usado para retransmitir pacotes e estender o alcance da rede.
 
-O projeto está organizado da seguinte forma:
+* A ECU inicia e cancela as corridas, coordena a máquina de estados de toda a rede e exibe os tempos no LCD.
+* O módulo de 30 m detecta a passagem do veículo por interrupção de hardware e também atua como ponte entre a ECU e o módulo de 100 m.
+* O módulo de 100 m mede dois tempos consecutivos (100 m e 101 m), permitindo calcular a velocidade final do veículo.
+* Todos os módulos implementam a mesma interface (`IModule`), o que permite que `main.cpp` instancie qualquer um deles de forma genérica, bastando trocar a constante `MODE`.
+
+## Arquitetura
+
+```mermaid
+flowchart LR
+    subgraph "0m - ECU"
+        SENSOR0[Sensor 0m] --> ECU[Module0m]
+        POT[Potenciômetro / Botões] --> ECU
+        ECU --> LCD[Display LCD I2C]
+        ECU --> SD[(Cartão SD - CSV)]
+    end
+    subgraph "30m"
+        S30[Sensor 30m - interrupção] --> M30[Module30m]
+    end
+    subgraph "100m"
+        S100[Sensores 100m / 101m] --> M100[Module100m]
+    end
+    subgraph Opcional
+        BR[BridgeModule]
+    end
+
+    ECU <-- "ESP-NOW (broadcast)" --> M30
+    M30 <-- "ESP-NOW (unicast ECU)" --> ECU
+    M30 -- "retransmite" --> M100
+    M100 -- "retransmite" --> M30
+    BR -. "retransmite todos os pacotes" .-> ECU
+    BR -. retransmite .-> M30
+    BR -. retransmite .-> M100
+```
+
+Toda a comunicação passa pela struct única `av_packet_t`, com um `message_id` para evitar loops de retransmissão — usado principalmente pelo `BridgeModule`, que mantém um cache dos últimos IDs já retransmitidos.
+
+## Estrutura de arquivos
 
 ```
 AV Test/
@@ -25,60 +64,152 @@ AV Test/
 │   ├── Module30m/       # Módulo sensor de 30 metros
 │   ├── Module100m/      # Módulo sensor de 100 metros
 │   └── SD/              # Funções para o cartão SD
-├── src/                 # Arquivo principal do código fonte
-│   └── main.cpp         # Ponto de entrada do programa
-├── README.md            # Este arquivo
-└── platformio.ini       # Arquivo de configuração do PlatformIO
+├── src/
+│   └── main.cpp          # Ponto de entrada — seleciona o módulo ativo via MODE
+├── platformio.ini
+└── README.md
 ```
-- **`backup/`**: Contém versões antigas e código de rascunho que não fazem parte da compilação final.
-- **`include/`**: Armazena definições e estruturas que são compartilhadas por todo o projeto.
-    - `hardware_defs.h`: Mapeia os pinos do ESP32 para cada componente de hardware, como sensores, botões e o módulo SD.
-    - `packets.h`: Define as estruturas de dados para a comunicação via ESP-NOW, os comandos da máquina de estados e os diferentes tipos de módulos.
-- **`lib/`**: Contém as bibliotecas de código para cada componente funcional do projeto. Cada subdiretório representa um módulo ou funcionalidade específica.
-    - `AV_espnow/`: Abstrai as funções do ESP-NOW para simplificar o envio e recebimento de dados.
-    - `Bridge/`: Implementa um módulo repetidor que retransmite pacotes para estender o alcance da rede.
-    - `IModule/`: Define uma interface (classe base abstrata) que padroniza a estrutura dos módulos, garantindo que todos tenham os métodos `setup()` e `loop()`.
-    - `LCD/`: Gerencia o display LCD I2C, incluindo a exibição de menus, tempos de corrida e mensagens de status.
-    - `Module0m/`: Código da ECU, responsável por coordenar a corrida, exibir os dados no LCD e salvar os resultados no cartão SD.
-    - `Module30m/` e `Module100m/`: Código dos módulos sensores, responsáveis por detectar a passagem do veículo e enviar os tempos para a ECU. O módulo de 30m também atua como ponte para o de 100m.
-    - `SD/`: Funções para inicializar o cartão SD e salvar os dados da corrida em formato CSV.
-- **`src/main.cpp`**: É o coração do programa. Ele lê a configuração `MODE` para determinar qual módulo será instanciado e executado (ECU, Sensor 30m, Sensor 100m ou Bridge).
-- **`platformio.ini`**: Arquivo de configuração do ambiente de desenvolvimento PlatformIO, que define a placa, o framework e as dependências do projeto.
 
-## Funcionalidades
+## Módulos
 
-### Comunicação
+Selecionáveis em `src/main.cpp` através da constante `MODE` (`enum class ModuleID`):
 
-- **Protocolo ESP-NOW**: O sistema utiliza o protocolo de comunicação sem fio ESP-NOW da Espressif, que permite a troca de dados de forma rápida e eficiente entre os dispositivos ESP32 sem a necessidade de uma rede Wi-Fi tradicional.
-- **Estrutura de Pacotes**: A comunicação é padronizada através da estrutura `av_packet_t`, que inclui a identificação do módulo, um comando para a máquina de estados, o endereço MAC do remetente e os tempos medidos.
-- **Módulo Ponte (Bridge)**: Para garantir a comunicação em distâncias maiores, um módulo `Bridge` pode ser utilizado para retransmitir os pacotes entre a ECU e os sensores mais distantes.
+| Módulo | Classe | Responsabilidade |
+|---|---|---|
+| `ModuleID::ECU` | `Module0m` | Inicia/cancela corridas, recebe os tempos de 30 m e 100 m, exibe no LCD e salva no SD |
+| `ModuleID::Sensor30m` | `Module30m` | Detecta a passagem por interrupção no sensor de 30 m; retransmite mensagens entre a ECU e o módulo de 100 m |
+| `ModuleID::Sensor100m` | `Module100m` | Detecta a passagem nos sensores de 100 m e 101 m (polling), permitindo calcular a velocidade final |
+| `ModuleID::Bridge` | `BridgeModule` | Retransmite todos os pacotes ESP-NOW recebidos, com cache de `message_id` para evitar loops |
 
-### Módulos
+Todos herdam de `IModule`, que define os métodos `setup()` e `loop()` implementados por cada módulo.
 
-O sistema é dividido em diferentes tipos de módulos, selecionáveis no arquivo `src/main.cpp`:
+## Máquinas de estado
 
-1.  **`ModuleID::ECU` (`Module0m`)**: A unidade central.
-    - Inicia e cancela as corridas.
-    - Recebe os tempos dos módulos de 30m e 100m.
-    - Exibe os tempos e a velocidade em um display LCD.
-    - Salva os dados da corrida em um cartão SD.
-    - Possui uma interface de usuário com botões e um potenciômetro para navegação.
+**ECU (`av_ecu_t`):**
 
-2.  **`ModuleID::Sensor30m` (`Module30m`)**:
-    - Detecta a passagem do veículo no marco de 30 metros usando um sensor.
-    - Envia o tempo registrado para a ECU.
-    - Atua como um repetidor, retransmitindo mensagens entre a ECU e o módulo de 100m.
+```mermaid
+stateDiagram-v2
+    [*] --> initializing
+    initializing --> menu: módulos 30m/100m confirmados
+    menu --> __start_run__: botão SEL
+    __start_run__ --> wait_to_start
+    wait_to_start --> lcd_display: sensor 0m acionado
+    lcd_display --> end_run: tempos 30m e 100m recebidos
+    end_run --> save_run: botão SEL
+    end_run --> menu: botão CANCEL
+    save_run --> menu
+    wait_to_start --> menu: botão CANCEL
+    lcd_display --> menu: botão CANCEL
+```
 
-3.  **`ModuleID::Sensor100m` (`Module100m`)**:
-    - Detecta a passagem do veículo nos marcos de 100 e 101 metros.
-    - Envia os dois tempos registrados para a ECU, permitindo o cálculo da velocidade final.
+**Sensores remotos (`state_t`, usado por `Module30m` e `Module100m`):**
 
-4.  **`ModuleID::Bridge`**:
-    - Um módulo dedicado a retransmitir todos os pacotes ESP-NOW que recebe para aumentar o alcance e a robustez da comunicação.
+```mermaid
+stateDiagram-v2
+    [*] --> wait
+    wait --> __setup__: comando start_run
+    __setup__ --> run
+    run --> wait: sensor acionado / tempo enviado
+    wait --> wait: comando cancel / reset
+```
 
-### Máquina de Estados
+## Protocolo de comunicação (ESP-NOW)
 
-Cada módulo opera com base em uma máquina de estados para controlar seu comportamento:
+### Identificação dos módulos (`module_t`)
 
-- **ECU (`av_ecu_t`)**: `initializing`, `menu`, `__start_run__`, `wait_to_start`, `lcd_display`, `end_run`, `save_run`.
-- **Sensores (`state_t`)**: `wait`, `__setup__`, `run`.
+| Valor | Nome | Descrição |
+|---|---|---|
+| 0 | `metros_0` | Módulo ECU (0 m), com LCD e cartão SD |
+| 1 | `metros_30` | Módulo sensor de 30 m |
+| 2 | `metros_100` | Módulo sensor de 100/101 m |
+| 3 | `bridge` | Módulo ponte/repetidor |
+
+### Comandos da máquina de estados (`state_machine_command_t`)
+
+| Valor | Nome | Descrição |
+|---|---|---|
+| `0xff` | `do_nothing` | Comando nulo, para preenchimento |
+| `0x00` | `check_module` | Verifica quais módulos estão online |
+| `0x03` | `cancel` | Cancela uma corrida em andamento |
+| `0x04` | `start_run` | A ECU inicia a cronometragem em todos os módulos |
+| `0x05` | `flag_30m` | Confirmação de presença enviada pelo módulo de 30 m |
+| `~0x05` | `end_run_30m` | Módulo de 30 m envia o tempo de passagem |
+| `0x06` | `flag_100m` | Confirmação de presença enviada pelo módulo de 100 m |
+| `~0x06` | `end_run_100m` | Módulo de 100 m envia os tempos de passagem (100 m e 101 m) |
+| `0x07` | `reset_` | Reinicia todos os módulos |
+
+### Estrutura do pacote (`av_packet_t`)
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `message_id` | `uint32_t` | ID único da mensagem, usado pelo `BridgeModule` para evitar loops de retransmissão |
+| `original_sender_mac` | `uint8_t[6]` | MAC do remetente que originou a mensagem |
+| `id` | `uint8_t` | Módulo remetente/retransmissor, conforme `module_t` |
+| `command_for_state_machine` | `uint8_t` | Comando para a máquina de estados, conforme `state_machine_command_t` |
+| `mac_address` | `uint8_t[6]` | MAC do remetente original (usado pela ECU para registrar peers) |
+| `time` | `unsigned long` | Timestamp principal (tempo em 30 m ou em 100 m) |
+| `timer2` | `unsigned long` | Timestamp secundário (tempo em 101 m) |
+
+## Hardware e pinagem
+
+Definições em `include/hardware_defs.h`:
+
+| Periférico | Pino | Módulo |
+|---|---|---|
+| SD CS | GPIO2 | 0m |
+| Potenciômetro (menu) | GPIO35 | 0m |
+| Botão Seleção | GPIO14 | 0m |
+| Botão Cancelar/Reset | GPIO13 | 0m |
+| Sensor 0m | GPIO15 | 0m |
+| Sensor 30m | GPIO5 | 30m |
+| Sensor 100m | GPIO5 | 100m |
+| Sensor 101m | GPIO18 | 100m |
+
+> O display LCD usa I2C no endereço `0x27` (16x2), configurado em `LCD.cpp`.
+
+## Armazenamento no cartão SD
+
+A ECU cria um novo arquivo `AV_dataN.csv` a cada inicialização (numeração sequencial, sem sobrescrever dados anteriores), com o cabeçalho:
+
+```
+tempo_30,tempo_100,velocidade
+```
+
+## Dependências
+
+| Biblioteca | Fonte | Uso |
+|---|---|---|
+| `esp_now.h` | ESP-IDF / Arduino-ESP32 core | Comunicação ESP-NOW entre os módulos |
+| `WiFi.h` | Arduino-ESP32 core | Modo estação (STA) necessário para o ESP-NOW e leitura do MAC address |
+| `Ticker.h` | Arduino-ESP32 core | Reabilita o botão de reset da ECU após um cancelamento |
+| `driver/gpio.h` | ESP-IDF | Definições de pinos em `hardware_defs.h` |
+| `SD.h` | Arduino core | Leitura/escrita do cartão SD |
+| `LiquidCrystal_I2C` | Biblioteca externa | Controle do display LCD 16x2 via I2C |
+
+## Como compilar e gravar
+
+Este projeto usa [PlatformIO](https://platformio.org/).
+
+1. Em `src/main.cpp`, defina qual módulo será gravado alterando a constante `MODE`:
+
+    ```cpp
+    #define MODE ModuleID::Sensor100m   // ou ECU, Sensor30m, Bridge
+    ```
+
+2. Compile e grave no ESP32 conectado:
+
+    ```bash
+    pio run --target upload
+    ```
+
+3. Acompanhe os logs pelo monitor serial:
+
+    ```bash
+    pio device monitor
+    ```
+
+Repita o processo para cada ESP32 da rede, selecionando o `MODE` correspondente a cada posição (ECU, 30 m, 100 m e, opcionalmente, Bridge).
+
+## Equipe
+
+Projeto mantido pela equipe **Mangue Baja**, da Universidade Federal de Pernambuco (UFPE), competidora do Baja SAE Brasil.
